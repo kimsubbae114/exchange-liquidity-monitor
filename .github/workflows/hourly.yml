@@ -1,0 +1,102 @@
+name: collect-and-publish
+
+# ★매시간 깨어나 55분간 수집하고, 리포트를 다시 그려 배포한다.
+#
+#   왜 "매시간 한 번 깨어나 그 안에서 5분 간격 12라운드" 인가
+#     GitHub 의 cron 은 5분 간격을 약속하지 않는다. 부하가 몰리면 수십 분 밀리고
+#     아예 건너뛰기도 한다. 매시간 한 번만 의지하고, 촘촘한 간격은 잡 안에서 만든다.
+#
+#   ★순위 판정에는 24시간 안에 표본 100개가 필요하다(agg.py 의 MIN_N).
+#     5분 간격이면 하루 288개라 여유가 있다.
+
+# ★자동 수집을 껐다 — 2026-08-26
+#   GitHub 러너는 미국(애리조나)에 있어 **바이낸스 451 · 바이빗 403** 으로 막힌다.
+#   그 둘이 빠진 순위는 의미가 없다. 수집은 오사카 서버에서 5분마다 돌고,
+#   결과를 이 저장소로 밀어 넣는다. 여기서 또 돌면 데이터가 겹치고 IP 차단분이 섞인다.
+#
+#   손으로 돌릴 수는 있게 둔다(배포만 다시 하고 싶을 때 등).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+permissions:
+  contents: write               # 수집 결과를 저장소에 커밋해야 한다
+
+# ★토큰은 여기(job 바깥)에 둬야 한다.
+#   step 안에 두면 그 step 의 `if:` 조건이 **env 가 채워지기 전에** 평가돼
+#   배포가 언제나 건너뛰어진다. 실제로 그렇게 돼 있었다.
+env:
+  CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75         # 55분 수집 + 여유
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 수집 (5분 간격 12라운드)
+        run: python collect.py --rounds 12 --gap 300 --budget 3300
+
+      - name: 최근 24시간 집계
+        run: python agg.py
+
+      - name: 순위 이력 갱신
+        run: python history.py
+
+      - name: 리포트 생성
+        run: python build_report.py
+
+      # ★밀어 넣기가 거부되면 다시 받아 얹고 재시도한다.
+      #   한 번에 실패해도 다음 회차에 다시 올라가지만, 그 회차가 통째로
+      #   실패로 보이면 진짜 고장과 구분이 안 된다. 그래서 여기서 끝낸다.
+      - name: 커밋
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data public
+          if git diff --quiet --cached; then
+            echo "바뀐 것이 없다"; exit 0
+          fi
+          git commit -m "collect $(date -u '+%Y-%m-%d %H:%M') UTC"
+          for i in 1 2 3 4 5; do
+            if git push; then echo "밀어 넣음 (시도 $i)"; exit 0; fi
+            echo "밀어 넣기 거부됨 — 다시 받아 얹는다 (시도 $i)"
+            git pull --rebase --autostash origin "${{ github.ref_name }}" || true
+            sleep $((i * 5))
+          done
+          echo "::error::다섯 번 시도했는데도 밀어 넣지 못했다"
+          exit 1
+
+      - name: Cloudflare Pages 배포
+        if: env.CF_TOKEN != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CF_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CF_ACCOUNT }}
+        run: |
+          npx --yes wrangler@4 pages deploy public \
+            --project-name=exchange-liquidity --branch=main --commit-dirty=true
+
+      - name: 배포를 건너뛴 이유
+        if: env.CF_TOKEN == ''
+        run: |
+          echo "::notice::CLOUDFLARE_API_TOKEN 이 없어 배포를 건너뛰었다. 수집은 계속 쌓인다."
+          echo "- ⚠️ Cloudflare 토큰이 없어 배포하지 않았다" >> $GITHUB_STEP_SUMMARY
+
+      - name: 요약
+        if: always()
+        run: |
+          echo "### 수집 결과" >> $GITHUB_STEP_SUMMARY
+          python summary.py >> $GITHUB_STEP_SUMMARY || echo "- 요약 실패" >> $GITHUB_STEP_SUMMARY

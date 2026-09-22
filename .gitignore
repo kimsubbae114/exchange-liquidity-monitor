@@ -1,0 +1,46 @@
+# data & caches — never commit collected data, only code
+data/
+runs/
+dist/
+local_reports/
+_*.json
+_*.log
+*.log
+*.xlsx
+*.csv
+*.jsonl
+*.db
+*.sqlite*
+*.pkl
+*.parquet
+
+# secrets
+secret/*
+!secret/keys.example.json
+keys.json
+*.key
+*token*
+.env
+
+# python / node
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.wrangler/
+
+# Local configuration and generated outputs
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+cache/
+.cache/
+web/config.js
+public/index.html
+public/*.json
+*.png
+
+public/*.js
