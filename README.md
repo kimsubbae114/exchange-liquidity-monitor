@@ -22,6 +22,13 @@ python build_report.py   # → public/index.html
 
 See `.github/workflows/` for the hourly schedule and deploy step.
 
+## How the live site is produced
+
+This repository is the **code only**. In production a small server runs `collect.py → agg.py → history.py → build_report.py`
+every six hours and pushes `data/` + `public/` to a separate data repository, whose `deploy.yml` publishes `public/`
+to Cloudflare Pages. If you fork this, run the same chain anywhere (cron, GitHub Actions, a VPS) and point
+`CLOUDFLARE_PAGES_PROJECT` / `SITE_URL` at your own project. The included `deploy.yml` does nothing until `public/index.html` exists.
+
 ## Notes
 
 - Some venues cap order-book depth per request; the collector asks for the deepest level each API allows.
